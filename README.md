@@ -41,10 +41,20 @@ Edit `manifest.tsv` — one sample per line, tab-delimited:
 
 ```
 sample01    /net/eichler/vol28/.../sample01.reads.bam
-sample02    /net/eichler/vol28/.../sample02.reads.bam
+sample02    /net/eichler/vol28/.../sample02.reads.bam    true
 ```
 
+| Column | Required | Description |
+|--------|----------|-------------|
+| 1      | yes      | Sample name |
+| 2      | yes      | Path to input BAM/UBAM |
+| 3      | no       | Strip kinetics tags (`true`/`yes`/`1` to remove; default: keep) |
+
 Lines beginning with `#` are ignored.
+
+Setting column 3 to `true` removes the PacBio kinetics tags (`ip`, `pw`, `fi`,
+`ri`, `fp`, `rp`) from every read, which reduces file size when kinetics
+information is no longer needed downstream.
 
 ### 2. Edit config.yaml (optional)
 
@@ -94,11 +104,13 @@ python workflow/scripts/bin_qv.py \
     --input  in.reads.bam \
     --output out.reads.qvbin.bam \
     --threads 8 \
-    --log    bin_qv.log
+    --log    bin_qv.log \
+    [--strip-kinetics]
 ```
 
-All tags and BAM headers are preserved. The script streams reads without
-loading the full file into memory.
+All tags and BAM headers are preserved by default. Pass `--strip-kinetics` to
+remove PacBio kinetics tags (`ip`, `pw`, `fi`, `ri`, `fp`, `rp`). The script
+streams reads without loading the full file into memory.
 
 ---
 

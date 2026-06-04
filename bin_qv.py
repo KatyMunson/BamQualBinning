@@ -14,10 +14,12 @@ QV bin table (from PacBio CCS documentation):
 
 Usage:
     python bin_qv.py --input in.bam --output out.bam [--threads N] [--log LOG]
+                     [--strip-kinetics]
 
 Notes:
     - Works on coordinate-sorted, queryname-sorted, or unsorted BAMs/UBAMs.
-    - All read tags and headers are preserved exactly.
+    - All read tags and headers are preserved exactly unless --strip-kinetics
+      is used, which removes the ip, pw, fi, ri, fp, and rp tags.
     - pysam writes a BGZF-compressed BAM by default; pipe through
       `samtools view -b` if you need a different format.
     - For very large files, use --threads to enable multi-threaded BAM I/O.
@@ -56,6 +58,16 @@ def build_lookup() -> array.array:
 
 LUT = build_lookup()
 
+# PacBio kinetics tags: IPD and pulse-width arrays (native and per-strand)
+KINETICS_TAGS = frozenset({"ip", "pw", "fi", "ri", "fp", "rp"})
+
+
+def strip_kinetics_tags(read: pysam.AlignedSegment) -> None:
+    """Remove PacBio kinetics tags from a read in-place."""
+    tags = [(t, v, tp) for t, v, tp in read.get_tags(with_value_type=True)
+            if t not in KINETICS_TAGS]
+    read.set_tags(tags)
+
 
 def remap_quals(quals: array.array) -> array.array:
     """Apply LUT to a pysam quality array (array of uint8) in-place."""
@@ -80,6 +92,9 @@ def parse_args() -> argparse.Namespace:
                    help="Log file path (default: stderr)")
     p.add_argument("--log-interval", type=int, default=100_000,
                    help="Log progress every N reads (default: 100000)")
+    p.add_argument("--strip-kinetics", action="store_true", default=False,
+                   help="Remove PacBio kinetics tags (ip, pw, fi, ri, fp, rp) "
+                        "from each read (default: keep tags)")
     return p.parse_args()
 
 
@@ -99,9 +114,10 @@ def main() -> None:
     args = parse_args()
     log  = setup_logging(args.log)
 
-    log.info("Input  : %s", args.input)
-    log.info("Output : %s", args.output)
-    log.info("Threads: %d", args.threads)
+    log.info("Input          : %s", args.input)
+    log.info("Output         : %s", args.output)
+    log.info("Threads        : %d", args.threads)
+    log.info("Strip kinetics : %s", args.strip_kinetics)
 
     t0 = time.perf_counter()
     n_reads      = 0
@@ -125,6 +141,9 @@ def main() -> None:
                 n_no_qual += 1
             else:
                 read.query_qualities = remap_quals(quals)
+
+            if args.strip_kinetics:
+                strip_kinetics_tags(read)
 
             bam_out.write(read)
 

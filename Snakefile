@@ -25,8 +25,11 @@ wildcard_constraints:
 # ---------------------------------------------------------------------------
 # Manifest parsing  (tab-delimited: sample\tinput_bam)
 # ---------------------------------------------------------------------------
-SAMPLES = []
-BAMS    = {}
+SAMPLES         = []
+BAMS            = {}
+STRIP_KINETICS  = {}
+
+_TRUTHY = {"true", "yes", "1"}
 
 with open(config["manifest"]) as fh:
     for lineno, line in enumerate(fh, 1):
@@ -35,11 +38,13 @@ with open(config["manifest"]) as fh:
             if len(fields) < 2:
                 raise ValueError(
                     f"Manifest line {lineno} has {len(fields)} field(s), expected ≥ 2 "
-                    f"(sample<TAB>bam_path)"
+                    f"(sample<TAB>bam_path[<TAB>strip_kinetics])"
                 )
             sample, bam = fields[0], fields[1]
+            strip = fields[2].strip().lower() in _TRUTHY if len(fields) >= 3 else False
             SAMPLES.append(sample)
-            BAMS[sample] = bam
+            BAMS[sample]           = bam
+            STRIP_KINETICS[sample] = strip
 
 if not SAMPLES:
     raise ValueError("No samples found in manifest!")
@@ -72,6 +77,8 @@ rule bin_qv:
     envmodules:
         "python/3.11",
         "pysam/0.22.0",
+    params:
+        strip_kinetics=lambda wc: "--strip-kinetics" if STRIP_KINETICS[wc.sample] else "",
     shell:
         """
         python {workflow.basedir}/scripts/bin_qv.py \
@@ -79,6 +86,7 @@ rule bin_qv:
             --output  {output.bam} \
             --threads {threads} \
             --log     {log} \
+            {params.strip_kinetics} \
             2>> {log}
         """
 

@@ -1,0 +1,22 @@
+# =============================================================================
+# config.yaml — UBAM QV Binning Pipeline
+# =============================================================================
+
+# Path to manifest file (tab-delimited: sample<TAB>input_bam_path)
+manifest: "manifest.tsv"
+
+# ---------------------------------------------------------------------------
+# Cluster resources
+# ---------------------------------------------------------------------------
+# mem is GB *per slot* (per core). SGE computes mem * threads = total request.
+# hrs is wall-clock hours.
+# ---------------------------------------------------------------------------
+resources:
+  bin_qv:
+    threads: 8
+    mem: 4        # 4 GB/slot × 8 threads = 32 GB total; adjust if NFS I/O stalls
+    hrs: 4
+  index:
+    threads: 4
+    mem: 2        # 2 GB/slot × 4 threads = 8 GB total
+    hrs: 1

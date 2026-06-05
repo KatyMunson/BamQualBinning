@@ -1,0 +1,7 @@
+# Reference sequencing data must NOT be committed: the BAMs are large and the
+# public PacBio data is not ours to redistribute. Ignore everything in this
+# directory except the docs and the fetch helper.
+*
+!.gitignore
+!README.md
+!fetch_reference.sh

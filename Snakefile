@@ -2,11 +2,11 @@
 # Snakefile — UBAM QV Binning
 #
 # Remaps per-base quality scores in PacBio UBAM files to the standard
-# Revio/CCS 7-bin scheme using workflow/scripts/bin_qv.py.
+# Revio/CCS 7-bin scheme using bin_qv.py.
 #
 # Steps:
-#   1. bin_qv  — remap per-base QVs for each sample UBAM
-#   2. index   — samtools index on the output BAM
+#   1. bin_qv            — remap per-base QVs for each sample UBAM
+#   2. aggregate_metrics — combine per-sample run-time metrics into one table
 #
 # Usage: snakemake -s Snakefile --configfile config.yaml --cores <N>
 # See README.md for full documentation and cluster submission instructions.
@@ -19,14 +19,23 @@ import os
 
 configfile: "config.yaml"
 
+# Run the target and the lightweight metrics aggregation on the submit host
+# rather than the cluster. Snakemake requires `run:` rules to be local under
+# cluster execution, and the aggregation is a millisecond pure-Python task that
+# should not consume a cluster slot (nor needs the DRMAA resource template).
+localrules: all, aggregate_metrics
+
 wildcard_constraints:
     sample="[^/]+",
 
 # ---------------------------------------------------------------------------
 # Manifest parsing  (tab-delimited: sample\tinput_bam)
 # ---------------------------------------------------------------------------
-SAMPLES = []
-BAMS    = {}
+SAMPLES         = []
+BAMS            = {}
+STRIP_KINETICS  = {}
+
+_TRUTHY = {"true", "yes", "1"}
 
 with open(config["manifest"]) as fh:
     for lineno, line in enumerate(fh, 1):
@@ -35,11 +44,13 @@ with open(config["manifest"]) as fh:
             if len(fields) < 2:
                 raise ValueError(
                     f"Manifest line {lineno} has {len(fields)} field(s), expected ≥ 2 "
-                    f"(sample<TAB>bam_path)"
+                    f"(sample<TAB>bam_path[<TAB>strip_kinetics])"
                 )
             sample, bam = fields[0], fields[1]
+            strip = fields[2].strip().lower() in _TRUTHY if len(fields) >= 3 else False
             SAMPLES.append(sample)
-            BAMS[sample] = bam
+            BAMS[sample]           = bam
+            STRIP_KINETICS[sample] = strip
 
 if not SAMPLES:
     raise ValueError("No samples found in manifest!")
@@ -50,7 +61,8 @@ if not SAMPLES:
 # ---------------------------------------------------------------------------
 rule all:
     input:
-        expand("results/{sample}/{sample}.qvbin.bam.bai", sample=SAMPLES),
+        expand("results/{sample}/{sample}.qvbin.bam", sample=SAMPLES),
+        "results/summary_metrics.tsv",
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +73,7 @@ rule bin_qv:
         bam=lambda wc: BAMS[wc.sample],
     output:
         bam="results/{sample}/{sample}.qvbin.bam",
+        metrics="results/{sample}/{sample}.metrics.tsv",
     log:
         "results/logs/{sample}/bin_qv.log",
     threads: config["resources"]["bin_qv"]["threads"]
@@ -72,36 +85,38 @@ rule bin_qv:
     envmodules:
         "python/3.11",
         "pysam/0.22.0",
+    params:
+        strip_kinetics=lambda wc: "--strip-kinetics" if STRIP_KINETICS[wc.sample] else "",
     shell:
         """
-        python {workflow.basedir}/scripts/bin_qv.py \
+        python {workflow.basedir}/bin_qv.py \
             --input   {input.bam} \
             --output  {output.bam} \
             --threads {threads} \
             --log     {log} \
+            --metrics {output.metrics} \
+            --sample  {wildcards.sample} \
+            {params.strip_kinetics} \
             2>> {log}
         """
 
 
 # ---------------------------------------------------------------------------
-# Rule: index
+# Rule: aggregate_metrics
 # ---------------------------------------------------------------------------
-rule index:
+rule aggregate_metrics:
     input:
-        bam="results/{sample}/{sample}.qvbin.bam",
+        expand("results/{sample}/{sample}.metrics.tsv", sample=SAMPLES),
     output:
-        bai="results/{sample}/{sample}.qvbin.bam.bai",
-    log:
-        "results/logs/{sample}/index.log",
-    threads: config["resources"]["index"]["threads"]
-    resources:
-        mem=lambda wildcards, attempt: config["resources"]["index"]["mem"] * attempt,
-        hrs=config["resources"]["index"]["hrs"],
-    conda:
-        "envs/ubam_qvbin.yaml"
-    envmodules:
-        "samtools/1.18",
-    shell:
-        """
-        samtools index -@ {threads} {input.bam} 2> {log}
-        """
+        tsv="results/summary_metrics.tsv",
+    run:
+        import csv
+        rows = []
+        for f in input:
+            with open(f) as fh:
+                rows.extend(list(csv.DictReader(fh, delimiter="\t")))
+        if rows:
+            with open(output.tsv, "w", newline="") as out:
+                w = csv.DictWriter(out, fieldnames=rows[0].keys(), delimiter="\t")
+                w.writeheader()
+                w.writerows(rows)

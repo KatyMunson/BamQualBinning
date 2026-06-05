@@ -45,7 +45,13 @@ benchmarking/benchmark_sizes.sh --input sample.hifi_reads.bam \
 
 ### Output
 
-`<outdir>/benchmark.tsv` with one row per cell:
+`<outdir>/benchmark.tsv`. The file opens with a block of `#INFO` provenance
+lines capturing the run parameters (date, input, mode, reads benchmarked,
+threads, kinetics tags, samtools/python versions, whether GNU time was
+available), followed by one row per cell. Downstream parsers should skip lines
+starting with `#`.
+
+Per-cell columns:
 
 | Column | Description |
 |---|---|

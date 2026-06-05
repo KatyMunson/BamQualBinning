@@ -217,9 +217,32 @@ VARIANTS=(raw_keep raw_strip bin_keep bin_strip)
 declare -A KIN=(  [raw_keep]=keep  [raw_strip]=strip [bin_keep]=keep  [bin_strip]=strip )
 declare -A QUAL=( [raw_keep]=raw   [raw_strip]=raw   [bin_keep]=binned [bin_strip]=binned )
 
+# Run-parameter provenance, written as #INFO comment lines at the top of the
+# TSV so the table is self-documenting (downstream parsers should skip lines
+# starting with '#').
+if [[ "$SUBSAMPLE" -gt 0 ]]; then
+    mode="subsample (first $SUBSAMPLE reads)"
+else
+    mode="whole file"
+fi
+samtools_ver=$(samtools --version 2>/dev/null | head -1)
+python_ver=$(python --version 2>&1)
+
 TSV="$OUTDIR/benchmark.tsv"
+{
+    printf "#INFO\tdate\t%s\n"            "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf "#INFO\tinput\t%s\n"           "$INPUT"
+    printf "#INFO\tmode\t%s\n"            "$mode"
+    printf "#INFO\treads_benchmarked\t%s\n" "$NREADS"
+    printf "#INFO\tthreads\t%s\n"          "$THREADS"
+    printf "#INFO\tkinetics_tags\t%s\n"    "$KINETICS_TAGS"
+    printf "#INFO\tsamtools\t%s\n"         "$samtools_ver"
+    printf "#INFO\tpython\t%s\n"           "$python_ver"
+    printf "#INFO\tgnu_time_cpu\t%s\n"     "$([[ "$HAS_GNU_TIME" -eq 1 ]] && echo yes || echo "no (samtools cpu_sec = N/A)")"
+} > "$TSV"
+
 printf "variant\tkinetics\tqual\tbytes\tMB\tbytes_per_read\tratio_vs_raw_keep\twallclock_sec\tcpu_sec\treads_per_sec\tpeak_rss_mb\n" \
-    > "$TSV"
+    >> "$TSV"
 
 base=$(stat -c %s "$OUTDIR/raw_keep.bam")
 for v in "${VARIANTS[@]}"; do
@@ -237,7 +260,11 @@ done
 
 echo >&2
 echo "===== Benchmark: $NREADS reads =====" >&2
-column -t -s $'\t' "$TSV"
+if command -v column >/dev/null; then
+    column -t -s $'\t' "$TSV"
+else
+    cat "$TSV"
+fi
 echo >&2
 echo "Table written to: $TSV" >&2
 

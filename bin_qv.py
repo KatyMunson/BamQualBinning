@@ -40,11 +40,14 @@ import pysam
 
 
 # ---------------------------------------------------------------------------
-# QV bin lookup table
-# Build a 94-element list (Phred 0–93) mapping each score to its bin mean.
+# QV bin translation table
+# Build a full 256-byte table mapping every possible uint8 Phred value to its
+# binned value. Indices 94–255 (Phred > 93) are clamped to Q40 so the hot path
+# needs no per-base bounds check. The table is used directly by
+# bytes.translate(), which remaps a whole quality string in one C-level call.
 # ---------------------------------------------------------------------------
-def build_lookup() -> array.array:
-    """Return an array of length 94 mapping raw Phred → binned Phred."""
+def build_translation_table() -> bytes:
+    """Return a 256-byte translation table mapping raw Phred → binned Phred."""
     BIN_RULES = [
         (0,  6,  3),
         (7,  13, 10),
@@ -54,14 +57,16 @@ def build_lookup() -> array.array:
         (30, 39, 35),
         (40, 93, 40),
     ]
-    lut = array.array("B", [0] * 94)
+    table = bytearray(256)
     for lo, hi, binned in BIN_RULES:
         for q in range(lo, hi + 1):
-            lut[q] = binned
-    return lut
+            table[q] = binned
+    for q in range(94, 256):          # clamp anything > 93 → Q40
+        table[q] = 40
+    return bytes(table)
 
 
-LUT = build_lookup()
+TRANSLATE_TABLE = build_translation_table()
 
 # PacBio kinetics tags: IPD and pulse-width arrays (native and per-strand)
 KINETICS_TAGS = frozenset({"ip", "pw", "fi", "ri", "fp", "rp"})
@@ -75,11 +80,12 @@ def strip_kinetics_tags(read: pysam.AlignedSegment) -> None:
 
 
 def remap_quals(quals: array.array) -> array.array:
-    """Apply LUT to a pysam quality array (array of uint8) in-place."""
-    for i in range(len(quals)):
-        q = quals[i]
-        quals[i] = LUT[q] if q < 94 else 40   # clamp anything > 93 → Q40
-    return quals
+    """Remap a pysam quality array (array of uint8) through the bin table.
+
+    Uses bytes.translate() so the whole quality string is remapped in a single
+    C-level call rather than a per-base Python loop.
+    """
+    return array.array("B", bytes(quals).translate(TRANSLATE_TABLE))
 
 
 # ---------------------------------------------------------------------------

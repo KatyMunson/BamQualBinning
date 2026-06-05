@@ -83,7 +83,7 @@ rule bin_qv:
         strip_kinetics=lambda wc: "--strip-kinetics" if STRIP_KINETICS[wc.sample] else "",
     shell:
         """
-        python {workflow.basedir}/scripts/bin_qv.py \
+        python {workflow.basedir}/bin_qv.py \
             --input   {input.bam} \
             --output  {output.bam} \
             --threads {threads} \

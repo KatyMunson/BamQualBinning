@@ -23,8 +23,12 @@ Remaps per-base quality scores in PacBio UBAM files to the standard
 BamQualBinning/
 ├── Snakefile
 ├── config.yaml
-├── bin_qv.py          ← core remapping script
-├── manifest.tsv       ← you create this (see Quick start)
+├── bin_qv.py                  ← core remapping script
+├── manifest.tsv               ← you create this (see Quick start)
+├── envs/
+│   └── ubam_qvbin.yaml        ← conda environment (for --use-conda)
+├── benchmarking/
+│   └── benchmark_sizes.sh     ← 4-way file-size comparison
 └── README.md
 ```
 
@@ -62,17 +66,15 @@ Adjust resource allocations under `resources:` if needed.
 
 #### Standalone (no cluster)
 
-With `python`, `pysam`, and `samtools` already available on your `PATH`
-(e.g. an activated conda/venv environment):
-
 ```bash
-snakemake -s Snakefile --configfile config.yaml --cores 8
+snakemake -s Snakefile --configfile config.yaml \
+    --use-conda --cores 8
 ```
 
-> **Note:** The Snakefile's `conda:` directive references
-> `envs/ubam_qvbin.yaml`, which is **not** bundled in this repository. To use
-> `--use-conda`, first create that file with the dependencies listed under
-> [Dependencies](#dependencies).
+The `conda:` directive builds the environment from `envs/ubam_qvbin.yaml` on
+first run. If `python`, `pysam`, and `samtools` are already on your `PATH`, you
+can drop `--use-conda` and just run `snakemake -s Snakefile --configfile
+config.yaml --cores 8`.
 
 #### SGE cluster (liger / e002 / e004)
 

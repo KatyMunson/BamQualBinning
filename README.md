@@ -15,6 +15,9 @@ Remaps per-base quality scores in PacBio UBAM files to the standard
 | [30, 39]    | Q35      | `D`   |
 | [40, 93]    | Q40      | `I`   |
 
+Bin boundaries and means follow PacBio's authoritative specification:
+<https://ccs.how/faq/qv-binning.html>.
+
 ---
 
 ## Repository layout

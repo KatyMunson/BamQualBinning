@@ -3,7 +3,7 @@
 bin_qv.py — Remap per-base quality scores in a PacBio UBAM to the standard
 Revio/CCS 7-bin scheme.
 
-QV bin table (from PacBio CCS documentation):
+QV bin table (from PacBio CCS documentation, https://ccs.how/faq/qv-binning.html):
     [ 0,  6] → Q3   (ASCII '$', offset 3)
     [ 7, 13] → Q10  (ASCII '+', offset 10)
     [14, 19] → Q17  (ASCII '2', offset 17)

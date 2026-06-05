@@ -86,13 +86,17 @@ snakemake -s Snakefile --configfile config.yaml \
 
 ### 4. Output
 
-Results are written to:
-
 ```
-results/{sample}/{sample}.qvbin.bam
-results/{sample}/{sample}.qvbin.bam.bai
-results/logs/{sample}/bin_qv.log
-results/logs/{sample}/index.log
+results/
+  summary_metrics.tsv             ← aggregated run-time table (one row per sample)
+  {sample}/
+    {sample}.qvbin.bam
+    {sample}.qvbin.bam.bai
+    {sample}.metrics.tsv          ← per-sample metrics
+  logs/
+    {sample}/
+      bin_qv.log
+      index.log
 ```
 
 ---
@@ -101,16 +105,48 @@ results/logs/{sample}/index.log
 
 ```bash
 python workflow/scripts/bin_qv.py \
-    --input  in.reads.bam \
-    --output out.reads.qvbin.bam \
+    --input   in.reads.bam \
+    --output  out.reads.qvbin.bam \
     --threads 8 \
-    --log    bin_qv.log \
+    --log     bin_qv.log \
+    --metrics out.metrics.tsv \
+    --sample  my_sample \
     [--strip-kinetics]
 ```
 
 All tags and BAM headers are preserved by default. Pass `--strip-kinetics` to
 remove PacBio kinetics tags (`ip`, `pw`, `fi`, `ri`, `fp`, `rp`). The script
 streams reads without loading the full file into memory.
+
+`--metrics` and `--sample` are optional; omitting them produces no metrics file
+and does not change processing behavior.
+
+---
+
+## Run-time metrics
+
+When `--metrics` is provided (set automatically by the Snakemake workflow),
+the script writes a single-row TSV with the following columns:
+
+| Column | Description |
+|---|---|
+| `sample` | Sample name |
+| `n_reads` | Total reads written |
+| `n_bases` | Total bases across all reads |
+| `n_no_qual` | Reads with no QUAL field (passed through unchanged) |
+| `wallclock_sec` | Wall-clock time from open to close (seconds) |
+| `cpu_sec` | CPU time (user + system) via `process_time()` |
+| `cpu_efficiency` | `cpu_sec / (wallclock_sec × threads)` — near 1.0 = fully parallel |
+| `peak_rss_mb` | Peak resident set size (MB) |
+| `reads_per_sec` | Read throughput |
+| `bases_per_sec` | Base throughput |
+| `input_size_bytes` | Input BAM file size |
+| `output_size_bytes` | Output BAM file size |
+| `threads` | BAM I/O thread count used |
+| `strip_kinetics` | Whether kinetics tags were stripped |
+
+The Snakemake workflow aggregates all per-sample files into
+`results/summary_metrics.tsv` automatically.
 
 ---
 

@@ -56,6 +56,7 @@ if not SAMPLES:
 rule all:
     input:
         expand("results/{sample}/{sample}.qvbin.bam.bai", sample=SAMPLES),
+        "results/summary_metrics.tsv",
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ rule bin_qv:
         bam=lambda wc: BAMS[wc.sample],
     output:
         bam="results/{sample}/{sample}.qvbin.bam",
+        metrics="results/{sample}/{sample}.metrics.tsv",
     log:
         "results/logs/{sample}/bin_qv.log",
     threads: config["resources"]["bin_qv"]["threads"]
@@ -86,9 +88,31 @@ rule bin_qv:
             --output  {output.bam} \
             --threads {threads} \
             --log     {log} \
+            --metrics {output.metrics} \
+            --sample  {wildcards.sample} \
             {params.strip_kinetics} \
             2>> {log}
         """
+
+
+# ---------------------------------------------------------------------------
+# Rule: aggregate_metrics
+# ---------------------------------------------------------------------------
+rule aggregate_metrics:
+    input:
+        expand("results/{sample}/{sample}.metrics.tsv", sample=SAMPLES),
+    output:
+        tsv="results/summary_metrics.tsv",
+    run:
+        import csv
+        rows = []
+        for f in input:
+            with open(f) as fh:
+                rows.extend(list(csv.DictReader(fh, delimiter="\t")))
+        with open(output.tsv, "w", newline="") as out:
+            w = csv.DictWriter(out, fieldnames=rows[0].keys(), delimiter="\t")
+            w.writeheader()
+            w.writerows(rows)
 
 
 # ---------------------------------------------------------------------------

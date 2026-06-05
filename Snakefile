@@ -2,11 +2,11 @@
 # Snakefile — UBAM QV Binning
 #
 # Remaps per-base quality scores in PacBio UBAM files to the standard
-# Revio/CCS 7-bin scheme using workflow/scripts/bin_qv.py.
+# Revio/CCS 7-bin scheme using bin_qv.py.
 #
 # Steps:
-#   1. bin_qv  — remap per-base QVs for each sample UBAM
-#   2. index   — samtools index on the output BAM
+#   1. bin_qv            — remap per-base QVs for each sample UBAM
+#   2. aggregate_metrics — combine per-sample run-time metrics into one table
 #
 # Usage: snakemake -s Snakefile --configfile config.yaml --cores <N>
 # See README.md for full documentation and cluster submission instructions.
@@ -55,7 +55,7 @@ if not SAMPLES:
 # ---------------------------------------------------------------------------
 rule all:
     input:
-        expand("results/{sample}/{sample}.qvbin.bam.bai", sample=SAMPLES),
+        expand("results/{sample}/{sample}.qvbin.bam", sample=SAMPLES),
         "results/summary_metrics.tsv",
 
 
@@ -114,27 +114,3 @@ rule aggregate_metrics:
                 w = csv.DictWriter(out, fieldnames=rows[0].keys(), delimiter="\t")
                 w.writeheader()
                 w.writerows(rows)
-
-
-# ---------------------------------------------------------------------------
-# Rule: index
-# ---------------------------------------------------------------------------
-rule index:
-    input:
-        bam="results/{sample}/{sample}.qvbin.bam",
-    output:
-        bai="results/{sample}/{sample}.qvbin.bam.bai",
-    log:
-        "results/logs/{sample}/index.log",
-    threads: config["resources"]["index"]["threads"]
-    resources:
-        mem=lambda wildcards, attempt: config["resources"]["index"]["mem"] * attempt,
-        hrs=config["resources"]["index"]["hrs"],
-    conda:
-        "envs/ubam_qvbin.yaml"
-    envmodules:
-        "samtools/1.18",
-    shell:
-        """
-        samtools index -@ {threads} {input.bam} 2> {log}
-        """

@@ -100,12 +100,10 @@ results/
   summary_metrics.tsv             ← aggregated run-time table (one row per sample)
   {sample}/
     {sample}.qvbin.bam
-    {sample}.qvbin.bam.bai
     {sample}.metrics.tsv          ← per-sample metrics
   logs/
     {sample}/
       bin_qv.log
-      index.log
 ```
 
 ---
@@ -161,11 +159,11 @@ The Snakemake workflow aggregates all per-sample files into
 
 ## Dependencies
 
-| Tool     | Version  |
-|----------|----------|
-| Python   | ≥ 3.11   |
-| pysam    | ≥ 0.22.0 |
-| samtools | ≥ 1.18   |
+| Tool     | Version  | Used by |
+|----------|----------|---------|
+| Python   | ≥ 3.11   | workflow + script |
+| pysam    | ≥ 0.22.0 | workflow + script |
+| samtools | ≥ 1.18   | `benchmarking/` only |
 
 ---
 

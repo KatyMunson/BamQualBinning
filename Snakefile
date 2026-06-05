@@ -19,6 +19,12 @@ import os
 
 configfile: "config.yaml"
 
+# Run the target and the lightweight metrics aggregation on the submit host
+# rather than the cluster. Snakemake requires `run:` rules to be local under
+# cluster execution, and the aggregation is a millisecond pure-Python task that
+# should not consume a cluster slot (nor needs the DRMAA resource template).
+localrules: all, aggregate_metrics
+
 wildcard_constraints:
     sample="[^/]+",
 

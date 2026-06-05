@@ -20,15 +20,12 @@ Remaps per-base quality scores in PacBio UBAM files to the standard
 ## Repository layout
 
 ```
-ubam-qv-bin/
+BamQualBinning/
 ├── Snakefile
 ├── config.yaml
-├── manifest.tsv              ← edit this
-└── workflow/
-    ├── envs/
-    │   └── ubam_qvbin.yaml   ← conda environment
-    └── scripts/
-        └── bin_qv.py         ← core remapping script
+├── bin_qv.py          ← core remapping script
+├── manifest.tsv       ← you create this (see Quick start)
+└── README.md
 ```
 
 ---
@@ -65,10 +62,17 @@ Adjust resource allocations under `resources:` if needed.
 
 #### Standalone (no cluster)
 
+With `python`, `pysam`, and `samtools` already available on your `PATH`
+(e.g. an activated conda/venv environment):
+
 ```bash
-snakemake -s Snakefile --configfile config.yaml \
-    --use-conda --cores 8
+snakemake -s Snakefile --configfile config.yaml --cores 8
 ```
+
+> **Note:** The Snakefile's `conda:` directive references
+> `envs/ubam_qvbin.yaml`, which is **not** bundled in this repository. To use
+> `--use-conda`, first create that file with the dependencies listed under
+> [Dependencies](#dependencies).
 
 #### SGE cluster (liger / e002 / e004)
 
@@ -104,7 +108,7 @@ results/
 ## Running the script standalone (no Snakemake)
 
 ```bash
-python workflow/scripts/bin_qv.py \
+python bin_qv.py \
     --input   in.reads.bam \
     --output  out.reads.qvbin.bam \
     --threads 8 \
@@ -164,8 +168,11 @@ The Snakemake workflow aggregates all per-sample files into
 
 - The script passes through reads with no QUAL field unchanged (and warns in the log).
 - Phred scores > 93 are clamped to Q40.
-- Expected **wall-clock time** for a 90 Gbp / 5M-read UBAM: 3–6 min on cluster
-  scratch, 10–20 min on slow NFS, depending on I/O throughput.
+- Quality remapping is vectorized via `bytes.translate()` (one C-level call per
+  read), so throughput is bound by BAM compression/decompression I/O rather than
+  the binning itself — scale `--threads` accordingly.
+- Expected **wall-clock time** for a 90 Gbp / 5M-read UBAM: a few minutes on
+  cluster scratch, longer on slow NFS, depending on I/O throughput.
 - For a ~40% file size reduction matching standard Revio output, combine with
   CRAM conversion after binning:
   ```bash

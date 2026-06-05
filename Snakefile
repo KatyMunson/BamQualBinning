@@ -109,10 +109,11 @@ rule aggregate_metrics:
         for f in input:
             with open(f) as fh:
                 rows.extend(list(csv.DictReader(fh, delimiter="\t")))
-        with open(output.tsv, "w", newline="") as out:
-            w = csv.DictWriter(out, fieldnames=rows[0].keys(), delimiter="\t")
-            w.writeheader()
-            w.writerows(rows)
+        if rows:
+            with open(output.tsv, "w", newline="") as out:
+                w = csv.DictWriter(out, fieldnames=rows[0].keys(), delimiter="\t")
+                w.writeheader()
+                w.writerows(rows)
 
 
 # ---------------------------------------------------------------------------

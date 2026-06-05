@@ -7,3 +7,10 @@ __pycache__/
 
 # Pipeline outputs
 results/
+benchmark_results/
+
+# User-specific manifest (created per the README)
+manifest.tsv
+
+# Editor backup files
+*~

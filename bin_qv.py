@@ -73,9 +73,15 @@ KINETICS_TAGS = frozenset({"ip", "pw", "fi", "ri", "fp", "rp"})
 
 
 def strip_kinetics_tags(read: pysam.AlignedSegment) -> None:
-    """Remove PacBio kinetics tags from a read in-place."""
-    tags = [(t, v, tp) for t, v, tp in read.get_tags(with_value_type=True)
-            if t not in KINETICS_TAGS]
+    """Remove PacBio kinetics tags from a read in-place.
+
+    Uses plain 2-tuple get_tags() rather than with_value_type=True: some pysam
+    versions return the `array` module (not an instance) as the type-code for
+    B-array tags (e.g. sn), which causes pack_tags to raise AttributeError when
+    it tries to call .typecode on it. With 2-tuples pysam infers the type from
+    the Python value directly, which works correctly for array.array instances.
+    """
+    tags = [(t, v) for t, v in read.get_tags() if t not in KINETICS_TAGS]
     read.set_tags(tags)
 
 

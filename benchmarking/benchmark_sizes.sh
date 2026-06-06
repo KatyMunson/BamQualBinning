@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # =============================================================================
-# benchmark_sizes.sh — 4-way file-size and timing comparison
+# benchmark_sizes.sh — file-size and timing comparison across binning schemes
 #
-# Builds all four combinations from a single input UBAM and reports their
+# Builds binned/raw variants from a single input UBAM and reports their
 # compressed sizes and processing times so the effect of (a) quality-score
-# binning and (b) kinetics-tag removal can be compared independently:
+# binning scheme and (b) kinetics-tag removal can be compared independently:
 #
-#                  | keep kinetics | strip kinetics
-#     -------------+---------------+----------------
-#     raw  QVs     |  raw_keep     |  raw_strip      ← samtools (neutral baseline)
-#     binned QVs   |  bin_keep     |  bin_strip      ← bin_qv.py
+#                       | keep kinetics      | strip kinetics
+#     ------------------+--------------------+---------------------
+#     raw  QVs          |  raw_keep          |  raw_strip          ← samtools
+#     binned (default)  |  bin_default_keep  |  bin_default_strip  ← bin_qv.py
+#     binned (scheme A) |  bin_A_keep        |  bin_A_strip        ← bin_qv.py
+#     binned (scheme …) |  …                 |  …
 #
 # The two raw cells use `samtools view` (htslib, bgzf level 6) so the baseline
-# does not depend on this project's own code. The two binned cells come from
-# ../bin_qv.py. All four use the same thread count and compression level, so
-# differences reflect *content* only.
+# does not depend on this project's own code. The binned cells come from
+# ../bin_qv.py. The default PacBio Revio 7-bin scheme is always included as a
+# binned baseline; pass --bins-file / --bins-dir to add custom schemes. All
+# cells use the same thread count and compression level, so differences reflect
+# *content* only.
 #
 # Timing sources:
 #   samtools cells  — wall time from date +%s%3N; CPU from /usr/bin/time
@@ -29,24 +33,28 @@
 #     -i, --input PATH     Input BAM/UBAM (required)
 #     -o, --outdir DIR     Output directory (default: ./benchmark_results)
 #     -s, --subsample N    Benchmark the first N reads only (default: 0 = whole
-#                          file). A fixed prefix keeps all four cells comparable
+#                          file). A fixed prefix keeps all cells comparable
 #                          and runs in minutes instead of hours.
 #     -t, --threads N      Threads for samtools and bin_qv.py (default: 8)
+#     -b, --bins-file PATH Add a custom bin scheme (repeatable). The scheme name
+#                          is the TSV filename stem.
+#         --bins-dir DIR   Add every *.tsv in DIR as a custom bin scheme.
 #         --clean          Delete generated BAMs after measuring; keep TSV + logs.
 #     -h, --help           Show this help.
 #
+# The default scheme is always benchmarked. Custom schemes are added on top.
+#
 # Output:
-#     <outdir>/raw_keep.bam, raw_strip.bam, bin_keep.bam, bin_strip.bam
-#     <outdir>/bin_keep.bam, bin_keep.log, bin_keep.metrics.tsv
-#     <outdir>/bin_strip.bam, bin_strip.log, bin_strip.metrics.tsv
+#     <outdir>/raw_keep.bam, raw_strip.bam
+#     <outdir>/bin_<scheme>_{keep,strip}.bam + .log + .metrics.tsv per scheme
 #     <outdir>/benchmark.tsv   ← the combined size + timing table
 #
 # Requirements: samtools >= 1.18, python with pysam, /usr/bin/time (GNU time,
 # for CPU measurement of samtools cells; wall time is always captured).
 #
-# NOTE: in whole-file mode the four output BAMs can each approach the size of
-# the input, so budget up to ~4x the input size in free disk (use --clean to
-# reclaim after the table is printed).
+# NOTE: in whole-file mode each output BAM can approach the size of the input.
+# With S schemes the total is (2 + 2*S) output BAMs, so budget disk accordingly
+# (use --clean to reclaim after the table is printed).
 # =============================================================================
 
 set -euo pipefail
@@ -61,17 +69,21 @@ OUTDIR="./benchmark_results"
 SUBSAMPLE=0
 THREADS=8
 CLEAN=0
+BINS_FILES=()
+BINS_DIR=""
 
 usage() { sed -n '2,/^# ===.*$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -i|--input)     INPUT="$2";     shift 2 ;;
-        -o|--outdir)    OUTDIR="$2";    shift 2 ;;
-        -s|--subsample) SUBSAMPLE="$2"; shift 2 ;;
-        -t|--threads)   THREADS="$2";   shift 2 ;;
-        --clean)        CLEAN=1;        shift   ;;
-        -h|--help)      usage; exit 0 ;;
+        -i|--input)      INPUT="$2";        shift 2 ;;
+        -o|--outdir)     OUTDIR="$2";       shift 2 ;;
+        -s|--subsample)  SUBSAMPLE="$2";    shift 2 ;;
+        -t|--threads)    THREADS="$2";      shift 2 ;;
+        -b|--bins-file)  BINS_FILES+=("$2"); shift 2 ;;
+        --bins-dir)      BINS_DIR="$2";     shift 2 ;;
+        --clean)         CLEAN=1;           shift   ;;
+        -h|--help)       usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
     esac
 done
@@ -86,6 +98,45 @@ if [[ ! -f "$BINQV" ]]; then
     echo "ERROR: could not locate bin_qv.py at $BINQV" >&2; exit 1
 fi
 command -v samtools >/dev/null || { echo "ERROR: samtools not on PATH." >&2; exit 1; }
+
+# Collect *.tsv from --bins-dir into the scheme list.
+if [[ -n "$BINS_DIR" ]]; then
+    if [[ ! -d "$BINS_DIR" ]]; then
+        echo "ERROR: --bins-dir not found: $BINS_DIR" >&2; exit 1
+    fi
+    shopt -s nullglob
+    for f in "$BINS_DIR"/*.tsv; do
+        BINS_FILES+=("$f")
+    done
+    shopt -u nullglob
+fi
+
+# ---------------------------------------------------------------------------
+# Build the scheme list as parallel arrays: SCHEME_NAMES[i] / SCHEME_PATHS[i].
+# The default PacBio Revio scheme is always first; its path is empty, which
+# tells bin_qv.py to use its built-in default. Custom schemes follow, named by
+# their TSV filename stem. Duplicate names are de-duplicated with a numeric
+# suffix so output filenames never collide.
+# ---------------------------------------------------------------------------
+SCHEME_NAMES=("default")
+SCHEME_PATHS=("")
+declare -A _seen_names=( [default]=1 )
+
+for f in "${BINS_FILES[@]}"; do
+    if [[ ! -f "$f" ]]; then
+        echo "ERROR: bins file not found: $f" >&2; exit 1
+    fi
+    base="$(basename "$f")"
+    name="${base%.tsv}"
+    if [[ -n "${_seen_names[$name]:-}" ]]; then
+        i=2
+        while [[ -n "${_seen_names[${name}_${i}]:-}" ]]; do i=$((i+1)); done
+        name="${name}_${i}"
+    fi
+    _seen_names[$name]=1
+    SCHEME_NAMES+=("$name")
+    SCHEME_PATHS+=("$f")
+done
 
 # Check for GNU time (needed for CPU measurement of samtools cells).
 HAS_GNU_TIME=0
@@ -160,62 +211,82 @@ if [[ "$SUBSAMPLE" -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Generate the four variants.
+# Generate variants.
+#
+# VARIANTS, and the parallel metadata maps KIN / QUAL / SCHEME, are built up as
+# each cell is produced so the TSV builder below stays scheme-count agnostic.
+# Total cells = 2 raw + 2 per binning scheme.
 # ---------------------------------------------------------------------------
-echo ">> [1/4] raw quals, keep kinetics  (samtools re-encode)" >&2
+VARIANTS=()
+declare -A KIN=()
+declare -A QUAL=()
+declare -A SCHEME=()
+
+n_schemes=${#SCHEME_NAMES[@]}
+total=$(( 2 + 2 * n_schemes ))
+step=0
+
+step=$((step+1))
+echo ">> [$step/$total] raw quals, keep kinetics  (samtools re-encode)" >&2
 run_samtools raw_keep \
     view -b -@ "$THREADS" -o "$OUTDIR/raw_keep.bam" "$WORK_INPUT"
+VARIANTS+=(raw_keep); KIN[raw_keep]=keep; QUAL[raw_keep]=raw; SCHEME[raw_keep]="-"
 
-echo ">> [2/4] raw quals, strip kinetics (samtools --remove-tag)" >&2
+step=$((step+1))
+echo ">> [$step/$total] raw quals, strip kinetics (samtools --remove-tag)" >&2
 run_samtools raw_strip \
     view -b -@ "$THREADS" --remove-tag "$KINETICS_TAGS" \
     -o "$OUTDIR/raw_strip.bam" "$WORK_INPUT"
+VARIANTS+=(raw_strip); KIN[raw_strip]=strip; QUAL[raw_strip]=raw; SCHEME[raw_strip]="-"
 
-echo ">> [3/4] binned quals, keep kinetics  (bin_qv.py)" >&2
-python "$BINQV" \
-    --input   "$WORK_INPUT" \
-    --output  "$OUTDIR/bin_keep.bam" \
-    --threads "$THREADS" \
-    --log     "$OUTDIR/bin_keep.log" \
-    --metrics "$OUTDIR/bin_keep.metrics.tsv" \
-    --sample  bin_keep
+# One binned keep/strip pair per scheme.
+for idx in "${!SCHEME_NAMES[@]}"; do
+    sname="${SCHEME_NAMES[$idx]}"
+    spath="${SCHEME_PATHS[$idx]}"
+    bins_arg=()
+    [[ -n "$spath" ]] && bins_arg=(--bins-file "$spath")
 
-echo ">> [4/4] binned quals, strip kinetics (bin_qv.py --strip-kinetics)" >&2
-python "$BINQV" \
-    --input          "$WORK_INPUT" \
-    --output         "$OUTDIR/bin_strip.bam" \
-    --threads        "$THREADS" \
-    --strip-kinetics \
-    --log            "$OUTDIR/bin_strip.log" \
-    --metrics        "$OUTDIR/bin_strip.metrics.tsv" \
-    --sample         bin_strip
+    for kin in keep strip; do
+        v="bin_${sname}_${kin}"
+        strip_arg=()
+        [[ "$kin" == "strip" ]] && strip_arg=(--strip-kinetics)
 
-# Pull timing from bin_qv.py metrics TSVs (measured inside the script).
-for v in bin_keep bin_strip; do
-    m="$OUTDIR/${v}.metrics.tsv"
-    WALL_SEC[$v]=$(parse_metric "$m" wallclock_sec)
-    CPU_SEC_A[$v]=$(parse_metric "$m" cpu_sec)
-    READS_PER_SEC[$v]=$(parse_metric "$m" reads_per_sec)
-    PEAK_RSS_MB[$v]=$(parse_metric "$m" peak_rss_mb)
+        step=$((step+1))
+        echo ">> [$step/$total] binned quals ($sname), $kin kinetics (bin_qv.py)" >&2
+        python "$BINQV" \
+            --input    "$WORK_INPUT" \
+            --output   "$OUTDIR/${v}.bam" \
+            --threads  "$THREADS" \
+            "${strip_arg[@]}" \
+            "${bins_arg[@]}" \
+            --log      "$OUTDIR/${v}.log" \
+            --metrics  "$OUTDIR/${v}.metrics.tsv" \
+            --sample   "$v"
+
+        VARIANTS+=("$v")
+        KIN[$v]="$kin"
+        QUAL[$v]=binned
+        SCHEME[$v]="$sname"
+
+        # Pull timing from the metrics TSV (measured inside the script).
+        m="$OUTDIR/${v}.metrics.tsv"
+        WALL_SEC[$v]=$(parse_metric "$m" wallclock_sec)
+        CPU_SEC_A[$v]=$(parse_metric "$m" cpu_sec)
+        READS_PER_SEC[$v]=$(parse_metric "$m" reads_per_sec)
+        PEAK_RSS_MB[$v]=$(parse_metric "$m" peak_rss_mb)
+    done
 done
 
 # ---------------------------------------------------------------------------
-# Count reads once from the smallest output.
+# Count reads once from a binned output (all variants have the same read count).
 # ---------------------------------------------------------------------------
-NREADS=$(samtools view -c -@ "$THREADS" "$OUTDIR/bin_strip.bam")
+NREADS=$(samtools view -c -@ "$THREADS" "$OUTDIR/bin_default_strip.bam")
 
 # For samtools cells: derive reads/sec from NREADS / wall time.
 for v in raw_keep raw_strip; do
     READS_PER_SEC[$v]=$(awk -v n="$NREADS" -v w="${WALL_SEC[$v]}" \
         'BEGIN{printf "%.1f", (w>0) ? n/w : 0}')
 done
-
-# ---------------------------------------------------------------------------
-# Build the combined TSV.
-# ---------------------------------------------------------------------------
-VARIANTS=(raw_keep raw_strip bin_keep bin_strip)
-declare -A KIN=(  [raw_keep]=keep  [raw_strip]=strip [bin_keep]=keep  [bin_strip]=strip )
-declare -A QUAL=( [raw_keep]=raw   [raw_strip]=raw   [bin_keep]=binned [bin_strip]=binned )
 
 # Run-parameter provenance, written as #INFO comment lines at the top of the
 # TSV so the table is self-documenting (downstream parsers should skip lines
@@ -228,6 +299,16 @@ fi
 samtools_ver=$(samtools --version 2>/dev/null | head -1)
 python_ver=$(python --version 2>&1)
 
+# Human-readable scheme summary for the provenance header: name=path (or
+# "built-in" for the default).
+schemes_summary=""
+for idx in "${!SCHEME_NAMES[@]}"; do
+    sname="${SCHEME_NAMES[$idx]}"
+    spath="${SCHEME_PATHS[$idx]}"
+    desc="${spath:-built-in}"
+    schemes_summary+="${sname}=${desc}; "
+done
+
 TSV="$OUTDIR/benchmark.tsv"
 {
     printf "#INFO\tdate\t%s\n"            "$(date '+%Y-%m-%d %H:%M:%S')"
@@ -236,12 +317,13 @@ TSV="$OUTDIR/benchmark.tsv"
     printf "#INFO\treads_benchmarked\t%s\n" "$NREADS"
     printf "#INFO\tthreads\t%s\n"          "$THREADS"
     printf "#INFO\tkinetics_tags\t%s\n"    "$KINETICS_TAGS"
+    printf "#INFO\tschemes\t%s\n"          "${schemes_summary%; }"
     printf "#INFO\tsamtools\t%s\n"         "$samtools_ver"
     printf "#INFO\tpython\t%s\n"           "$python_ver"
     printf "#INFO\tgnu_time_cpu\t%s\n"     "$([[ "$HAS_GNU_TIME" -eq 1 ]] && echo yes || echo "no (samtools cpu_sec = N/A)")"
 } > "$TSV"
 
-printf "variant\tkinetics\tqual\tbytes\tMB\tbytes_per_read\tratio_vs_raw_keep\twallclock_sec\tcpu_sec\treads_per_sec\tpeak_rss_mb\n" \
+printf "variant\tscheme\tkinetics\tqual\tbytes\tMB\tbytes_per_read\tratio_vs_raw_keep\twallclock_sec\tcpu_sec\treads_per_sec\tpeak_rss_mb\n" \
     >> "$TSV"
 
 base=$(stat -c %s "$OUTDIR/raw_keep.bam")
@@ -250,8 +332,8 @@ for v in "${VARIANTS[@]}"; do
     mb=$(awk    -v b="$sz"   'BEGIN{printf "%.1f", b/1048576}')
     bpr=$(awk   -v b="$sz" -v n="$NREADS" 'BEGIN{printf "%.1f", b/n}')
     ratio=$(awk -v b="$sz" -v a="$base" 'BEGIN{printf "%.3f", b/a}')
-    printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "$v" "${KIN[$v]}" "${QUAL[$v]}" \
+    printf "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$v" "${SCHEME[$v]}" "${KIN[$v]}" "${QUAL[$v]}" \
         "$sz" "$mb" "$bpr" "$ratio" \
         "${WALL_SEC[$v]}" "${CPU_SEC_A[$v]}" \
         "${READS_PER_SEC[$v]}" "${PEAK_RSS_MB[$v]}" \
@@ -279,7 +361,8 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "$CLEAN" -eq 1 ]]; then
     echo ">> --clean: removing generated BAMs (keeping TSV, logs, metrics)" >&2
-    rm -f "$OUTDIR"/raw_keep.bam "$OUTDIR"/raw_strip.bam \
-          "$OUTDIR"/bin_keep.bam "$OUTDIR"/bin_strip.bam
+    for v in "${VARIANTS[@]}"; do
+        rm -f "$OUTDIR/${v}.bam"
+    done
     [[ "$SUBSAMPLE" -gt 0 ]] && rm -f "$WORK_INPUT"
 fi

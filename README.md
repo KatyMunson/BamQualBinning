@@ -214,11 +214,11 @@ The Snakemake workflow aggregates all per-sample files into
 - Quality remapping is vectorized via `bytes.translate()` (one C-level call per
   read), so throughput is bound by BAM compression/decompression I/O rather than
   the binning itself — scale `--threads` accordingly.
-- For a ~40% file size reduction matching standard Revio output, combine with
-  CRAM conversion after binning:
-  ```bash
-  samtools view -C -T ref.fa out.qvbin.bam -o out.qvbin.cram
-  ```
+- PacBio states that retaining full (unbinned) quality scores produces files
+  ~40% larger than the default 7-bin scheme. Measuring whether that holds for
+  real Revio data is a primary purpose of this project; use `benchmarking/` to
+  compare schemes head-to-head. (Early n=1 results suggest the unbinned penalty
+  may be substantially larger — see the estimates below.)
 
 ---
 

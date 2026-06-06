@@ -214,10 +214,45 @@ The Snakemake workflow aggregates all per-sample files into
 - Quality remapping is vectorized via `bytes.translate()` (one C-level call per
   read), so throughput is bound by BAM compression/decompression I/O rather than
   the binning itself — scale `--threads` accordingly.
-- Expected **wall-clock time** for a 90 Gbp / 5M-read UBAM: a few minutes on
-  cluster scratch, longer on slow NFS, depending on I/O throughput.
 - For a ~40% file size reduction matching standard Revio output, combine with
   CRAM conversion after binning:
   ```bash
   samtools view -C -T ref.fa out.qvbin.bam -o out.qvbin.cram
   ```
+
+---
+
+## Performance & file-size estimates
+
+> **Note:** the figures below are **extrapolated** from a 200k-read benchmark
+> subset (linear scaling to 2.5M reads) and will be replaced with measured
+> numbers from a full production run. Wall-clock time is I/O-bound and scales
+> with your storage subsystem (fast scratch vs. busy NFS), not just read count;
+> CPU-time scales more reliably. See `benchmarking/` to reproduce.
+
+### Run time (bin_qv.py, ~2.5M reads, multi-threaded I/O)
+
+| Operation | Wall-clock | CPU-time |
+|---|---|---|
+| Default binning, keep kinetics | ~37 min | ~93 min |
+| Default binning, strip kinetics | ~13 min | ~45 min |
+
+Strip-kinetics runs are ~3× faster than keep, because the output is ~6× smaller
+and the cost is dominated by bytes written, not the binning math.
+
+### File size — cost of retaining more quality than the default scheme
+
+The PacBio Revio default binning is the standard. Retaining *more* quality
+information (a finer custom scheme, or full unbinned QVs) costs extra disk —
+roughly a **fixed absolute amount per file**, independent of kinetics handling.
+Per 2.5M-read file:
+
+| What you keep | keep kinetics | strip kinetics |
+|---|---|---|
+| Default Revio binning (standard) | 161 GB | 24 GB |
+| Finer custom scheme (e.g. more high-end bins) | +~4 GB (+2%) | +~4 GB (+16%) |
+| Full base quality (no binning) | +~23 GB (+14%) | +~23 GB (+93%) |
+
+The percentage looks small in a kinetics-retained workflow but nearly doubles
+the file once kinetics are stripped — so the "is full quality worth the disk?"
+trade-off is sharpest when kinetics are already removed.

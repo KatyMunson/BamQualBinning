@@ -28,6 +28,8 @@ BamQualBinning/
 ├── config.yaml
 ├── bin_qv.py                  ← core remapping script
 ├── manifest.tsv               ← you create this (see Quick start)
+├── bins/
+│   └── pacbio_revio.tsv       ← reference copy of the default bin scheme
 ├── envs/
 │   └── ubam_qvbin.yaml        ← conda environment (for --use-conda)
 ├── benchmarking/
@@ -118,7 +120,8 @@ python bin_qv.py \
     --log     bin_qv.log \
     --metrics out.metrics.tsv \
     --sample  my_sample \
-    [--strip-kinetics]
+    [--strip-kinetics] \
+    [--bins-file bins/pacbio_revio.tsv]
 ```
 
 All tags and BAM headers are preserved by default. Pass `--strip-kinetics` to
@@ -127,6 +130,43 @@ streams reads without loading the full file into memory.
 
 `--metrics` and `--sample` are optional; omitting them produces no metrics file
 and does not change processing behavior.
+
+`--bins-file` is optional; omitting it uses the default PacBio Revio 7-bin scheme.
+
+---
+
+## Custom bin schemes
+
+Pass `--bins-file PATH` to use an alternate QV binning scheme. The file is a
+tab-delimited TSV with three columns (no header required; `#` lines are comments):
+
+```
+# lo	hi	bin_mean
+0	6	3
+7	13	10
+...
+```
+
+| Column | Description |
+|--------|-------------|
+| `lo` | Lower bound of the input Phred range (inclusive) |
+| `hi` | Upper bound of the input Phred range (inclusive) |
+| `bin_mean` | Output Phred value for all scores in `[lo, hi]` |
+
+**Rules:**
+- Bins must be contiguous (no gaps, no overlaps).
+- `bin_mean` must be within `[lo, hi]`.
+- Phred scores above the highest `hi` are clamped to that bin's `bin_mean`.
+- At least one bin must be defined.
+
+`bins/pacbio_revio.tsv` is included as a reference copy of the default scheme —
+use it as a starting point for custom schemes.
+
+To use a custom scheme in the Snakemake workflow, set `bins_file` in `config.yaml`:
+
+```yaml
+bins_file: "bins/my_custom_scheme.tsv"
+```
 
 ---
 
@@ -170,7 +210,7 @@ The Snakemake workflow aggregates all per-sample files into
 ## Notes
 
 - The script passes through reads with no QUAL field unchanged (and warns in the log).
-- Phred scores > 93 are clamped to Q40.
+- Phred scores > 93 are clamped to the highest defined bin's mean (Q40 for the default scheme; configurable with `--bins-file`).
 - Quality remapping is vectorized via `bytes.translate()` (one C-level call per
   read), so throughput is bound by BAM compression/decompression I/O rather than
   the binning itself — scale `--threads` accordingly.

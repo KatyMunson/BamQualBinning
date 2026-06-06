@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 bin_qv.py — Remap per-base quality scores in a PacBio UBAM to the standard
-Revio/CCS 7-bin scheme.
+Revio/CCS 7-bin scheme, or to a user-defined binning scheme.
 
-QV bin table (from PacBio CCS documentation, https://ccs.how/faq/qv-binning.html):
+Default QV bin table (PacBio CCS, https://ccs.how/faq/qv-binning.html):
     [ 0,  6] → Q3   (ASCII '$', offset 3)
     [ 7, 13] → Q10  (ASCII '+', offset 10)
     [14, 19] → Q17  (ASCII '2', offset 17)
@@ -15,6 +15,7 @@ QV bin table (from PacBio CCS documentation, https://ccs.how/faq/qv-binning.html
 Usage:
     python bin_qv.py --input in.bam --output out.bam [--threads N] [--log LOG]
                      [--strip-kinetics] [--metrics METRICS] [--sample SAMPLE]
+                     [--bins-file BINS_TSV]
 
 Notes:
     - Works on coordinate-sorted, queryname-sorted, or unsorted BAMs/UBAMs.
@@ -25,6 +26,8 @@ Notes:
     - For very large files, use --threads to enable multi-threaded BAM I/O.
     - Pass --metrics to write a single-row TSV of run-time performance metrics
       suitable for aggregation into a per-run summary table.
+    - Pass --bins-file to use a custom binning scheme (TSV: lo<TAB>hi<TAB>bin_mean).
+      Phred values beyond the highest defined bin are clamped to that bin's mean.
 """
 
 import argparse
@@ -42,27 +45,92 @@ import pysam
 # ---------------------------------------------------------------------------
 # QV bin translation table
 # Build a full 256-byte table mapping every possible uint8 Phred value to its
-# binned value. Indices 94–255 (Phred > 93) are clamped to Q40 so the hot path
-# needs no per-base bounds check. The table is used directly by
-# bytes.translate(), which remaps a whole quality string in one C-level call.
+# binned value. Indices 94–255 (Phred > 93) are clamped to the highest bin's
+# mean so the hot path needs no per-base bounds check. The table is used
+# directly by bytes.translate(), which remaps a whole quality string in one
+# C-level call.
 # ---------------------------------------------------------------------------
-def build_translation_table() -> bytes:
-    """Return a 256-byte translation table mapping raw Phred → binned Phred."""
-    BIN_RULES = [
-        (0,  6,  3),
-        (7,  13, 10),
-        (14, 19, 17),
-        (20, 24, 22),
-        (25, 29, 27),
-        (30, 39, 35),
-        (40, 93, 40),
-    ]
+
+_DEFAULT_BIN_RULES = [
+    (0,  6,  3),
+    (7,  13, 10),
+    (14, 19, 17),
+    (20, 24, 22),
+    (25, 29, 27),
+    (30, 39, 35),
+    (40, 93, 40),
+]
+
+
+def load_bins_file(path: str) -> list:
+    """Parse a TSV bins file and return sorted list of (lo, hi, bin_mean) tuples.
+
+    File format: one bin per line, tab-delimited (lo<TAB>hi<TAB>bin_mean).
+    Lines beginning with '#' or empty lines are ignored. No header required.
+
+    Raises ValueError for any validation failure.
+    """
+    rules = []
+    with open(path) as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) != 3:
+                raise ValueError(
+                    f"{path}:{lineno}: expected 3 tab-delimited columns "
+                    f"(lo, hi, bin_mean), got {len(parts)}"
+                )
+            try:
+                lo, hi, bin_mean = int(parts[0]), int(parts[1]), int(parts[2])
+            except ValueError:
+                raise ValueError(
+                    f"{path}:{lineno}: all three columns must be integers"
+                )
+            if lo < 0 or hi < 0 or bin_mean < 0:
+                raise ValueError(f"{path}:{lineno}: values must be non-negative")
+            if lo > hi:
+                raise ValueError(f"{path}:{lineno}: lo ({lo}) > hi ({hi})")
+            if not (lo <= bin_mean <= hi):
+                raise ValueError(
+                    f"{path}:{lineno}: bin_mean ({bin_mean}) not in [{lo}, {hi}]"
+                )
+            rules.append((lo, hi, bin_mean))
+
+    if not rules:
+        raise ValueError(f"{path}: no bins defined (file is empty or all comments)")
+
+    rules.sort(key=lambda r: r[0])
+
+    # Validate contiguity: each bin must start exactly where the previous ended
+    for i in range(1, len(rules)):
+        prev_hi = rules[i - 1][1]
+        cur_lo  = rules[i][0]
+        if cur_lo != prev_hi + 1:
+            raise ValueError(
+                f"{path}: bins are not contiguous — bin {i} starts at {cur_lo} "
+                f"but previous bin ends at {prev_hi} "
+                f"({'gap' if cur_lo > prev_hi + 1 else 'overlap'})"
+            )
+
+    return rules
+
+
+def build_translation_table(bin_rules=None) -> bytes:
+    """Return a 256-byte translation table mapping raw Phred → binned Phred.
+
+    If bin_rules is None, uses the default PacBio Revio 7-bin scheme.
+    Phred values in 94–255 are clamped to the highest bin's bin_mean.
+    """
+    rules = bin_rules if bin_rules is not None else _DEFAULT_BIN_RULES
     table = bytearray(256)
-    for lo, hi, binned in BIN_RULES:
+    for lo, hi, binned in rules:
         for q in range(lo, hi + 1):
             table[q] = binned
-    for q in range(94, 256):          # clamp anything > 93 → Q40
-        table[q] = 40
+    clamp_value = max(rules, key=lambda r: r[1])[2]
+    for q in range(94, 256):
+        table[q] = clamp_value
     return bytes(table)
 
 
@@ -85,13 +153,13 @@ def strip_kinetics_tags(read: pysam.AlignedSegment) -> None:
     read.set_tags(tags)
 
 
-def remap_quals(quals: array.array) -> array.array:
+def remap_quals(quals: array.array, table: bytes = TRANSLATE_TABLE) -> array.array:
     """Remap a pysam quality array (array of uint8) through the bin table.
 
     Uses bytes.translate() so the whole quality string is remapped in a single
     C-level call rather than a per-base Python loop.
     """
-    return array.array("B", bytes(quals).translate(TRANSLATE_TABLE))
+    return array.array("B", bytes(quals).translate(table))
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +167,8 @@ def remap_quals(quals: array.array) -> array.array:
 # ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Remap PacBio UBAM per-base QVs to the standard 7-bin CCS scheme."
+        description="Remap PacBio UBAM per-base QVs to the standard 7-bin CCS scheme "
+                    "or a user-defined scheme."
     )
     p.add_argument("-i", "--input",   required=True,  help="Input BAM/UBAM path (or '-' for stdin)")
     p.add_argument("-o", "--output",  required=True,  help="Output BAM path (or '-' for stdout)")
@@ -118,6 +187,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sample", default=None, metavar="NAME",
                    help="Sample name written to the metrics TSV "
                         "(default: output filename stem)")
+    p.add_argument("--bins-file", default=None, metavar="PATH",
+                   help="TSV file defining a custom QV binning scheme "
+                        "(columns: lo<TAB>hi<TAB>bin_mean, one bin per row). "
+                        "Default: PacBio Revio 7-bin scheme.")
     return p.parse_args()
 
 
@@ -150,11 +223,27 @@ def main() -> None:
 
     sample_name = args.sample or os.path.splitext(os.path.basename(args.output))[0]
 
+    # Load bins file if provided; validate before opening BAMs
+    if args.bins_file:
+        try:
+            bin_rules = load_bins_file(args.bins_file)
+        except (ValueError, OSError) as exc:
+            log.error("Invalid --bins-file: %s", exc)
+            sys.exit(1)
+        table = build_translation_table(bin_rules)
+        bin_scheme_label = f"custom ({args.bins_file})  [{len(bin_rules)} bins]"
+        bins_file_label  = args.bins_file
+    else:
+        table            = TRANSLATE_TABLE
+        bin_scheme_label = "default (PacBio Revio 7-bin)"
+        bins_file_label  = "default"
+
     log.info("Input          : %s", args.input)
     log.info("Output         : %s", args.output)
     log.info("Sample         : %s", sample_name)
     log.info("Threads        : %d", args.threads)
     log.info("Strip kinetics : %s", args.strip_kinetics)
+    log.info("Bin scheme     : %s", bin_scheme_label)
     if args.metrics:
         log.info("Metrics file   : %s", args.metrics)
 
@@ -183,7 +272,7 @@ def main() -> None:
             if quals is None:
                 n_no_qual += 1
             else:
-                read.query_qualities = remap_quals(quals)
+                read.query_qualities = remap_quals(quals, table)
 
             if args.strip_kinetics:
                 strip_kinetics_tags(read)
@@ -245,6 +334,7 @@ def main() -> None:
             "output_size_bytes": output_bytes,
             "threads":           args.threads,
             "strip_kinetics":    args.strip_kinetics,
+            "bins_file":         bins_file_label,
         }
         write_metrics(args.metrics, metrics)
         log.info("Metrics written : %s", args.metrics)

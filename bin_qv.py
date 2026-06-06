@@ -114,6 +114,22 @@ def load_bins_file(path: str) -> list:
                 f"({'gap' if cur_lo > prev_hi + 1 else 'overlap'})"
             )
 
+    # Validate full coverage of the Phred range [0, 93]. Without this, any
+    # uncovered value silently maps to Q0 in the translation table (e.g. a
+    # scheme starting at 10 maps Q0–Q9 to Q0; one ending at 50 maps Q51–Q93 to
+    # Q0 while Q94+ clamps to the top bin). Values above 93 are handled by the
+    # clamp in build_translation_table().
+    if rules[0][0] != 0:
+        raise ValueError(
+            f"{path}: lowest bin must start at Phred 0 "
+            f"(starts at {rules[0][0]}; Phred 0–{rules[0][0] - 1} would be uncovered)"
+        )
+    if rules[-1][1] < 93:
+        raise ValueError(
+            f"{path}: highest bin must cover at least Phred 93 "
+            f"(ends at {rules[-1][1]}; Phred {rules[-1][1] + 1}–93 would be uncovered)"
+        )
+
     return rules
 
 
@@ -126,7 +142,9 @@ def build_translation_table(bin_rules=None) -> bytes:
     rules = bin_rules if bin_rules is not None else _DEFAULT_BIN_RULES
     table = bytearray(256)
     for lo, hi, binned in rules:
-        for q in range(lo, hi + 1):
+        # Cap at 255: a bin may legitimately specify hi > 93 to mean "everything
+        # high"; the table only has 256 entries, and 94–255 are clamped below.
+        for q in range(lo, min(hi, 255) + 1):
             table[q] = binned
     clamp_value = max(rules, key=lambda r: r[1])[2]
     for q in range(94, 256):

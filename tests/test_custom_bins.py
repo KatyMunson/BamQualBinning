@@ -113,6 +113,29 @@ def test_load_bins_file_empty(tmp_path):
         load_bins_file(path)
 
 
+def test_load_bins_file_must_start_at_zero(tmp_path):
+    """A scheme that doesn't start at Phred 0 leaves low values uncovered."""
+    path = write_bins(tmp_path, "10\t93\t40\n")
+    with pytest.raises(ValueError, match="start at Phred 0"):
+        load_bins_file(path)
+
+
+def test_load_bins_file_must_cover_93(tmp_path):
+    """A scheme that doesn't reach Phred 93 leaves high values uncovered."""
+    path = write_bins(tmp_path, "0\t50\t25\n")
+    with pytest.raises(ValueError, match="cover at least Phred 93"):
+        load_bins_file(path)
+
+
+def test_load_bins_file_top_bin_may_exceed_93(tmp_path):
+    """A top bin with hi > 93 is allowed and must not crash (capped at 255)."""
+    path = write_bins(tmp_path, "0\t6\t3\n7\t300\t40\n")
+    rules = load_bins_file(path)
+    table = build_translation_table(rules)
+    assert table[93] == 40
+    assert table[255] == 40   # clamp, no IndexError
+
+
 def test_load_bins_file_wrong_columns(tmp_path):
     path = write_bins(tmp_path, "0\t6\n")
     with pytest.raises(ValueError, match="3 tab-delimited"):

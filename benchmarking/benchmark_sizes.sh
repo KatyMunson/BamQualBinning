@@ -122,7 +122,9 @@ SCHEME_NAMES=("default")
 SCHEME_PATHS=("")
 declare -A _seen_names=( [default]=1 )
 
-for f in "${BINS_FILES[@]}"; do
+# Guard the expansion: under `set -u`, expanding an empty array with [@] is an
+# unbound-variable error on bash <= 4.3 (e.g. RHEL7/CentOS7 default bash 4.2).
+for f in ${BINS_FILES[@]+"${BINS_FILES[@]}"}; do
     if [[ ! -f "$f" ]]; then
         echo "ERROR: bins file not found: $f" >&2; exit 1
     fi
@@ -243,25 +245,25 @@ VARIANTS+=(raw_strip); KIN[raw_strip]=strip; QUAL[raw_strip]=raw; SCHEME[raw_str
 for idx in "${!SCHEME_NAMES[@]}"; do
     sname="${SCHEME_NAMES[$idx]}"
     spath="${SCHEME_PATHS[$idx]}"
-    bins_arg=()
-    [[ -n "$spath" ]] && bins_arg=(--bins-file "$spath")
 
     for kin in keep strip; do
         v="bin_${sname}_${kin}"
-        strip_arg=()
-        [[ "$kin" == "strip" ]] && strip_arg=(--strip-kinetics)
 
         step=$((step+1))
         echo ">> [$step/$total] binned quals ($sname), $kin kinetics (bin_qv.py)" >&2
-        python "$BINQV" \
-            --input    "$WORK_INPUT" \
-            --output   "$OUTDIR/${v}.bam" \
-            --threads  "$THREADS" \
-            "${strip_arg[@]}" \
-            "${bins_arg[@]}" \
-            --log      "$OUTDIR/${v}.log" \
-            --metrics  "$OUTDIR/${v}.metrics.tsv" \
-            --sample   "$v"
+        # Build the command as a single non-empty array so optional flags can be
+        # appended conditionally — this avoids expanding an empty array under
+        # `set -u`, which is an unbound-variable error on bash <= 4.3.
+        cmd=(python "$BINQV"
+            --input    "$WORK_INPUT"
+            --output   "$OUTDIR/${v}.bam"
+            --threads  "$THREADS")
+        [[ "$kin" == "strip" ]] && cmd+=(--strip-kinetics)
+        [[ -n "$spath" ]]       && cmd+=(--bins-file "$spath")
+        cmd+=(--log     "$OUTDIR/${v}.log"
+              --metrics "$OUTDIR/${v}.metrics.tsv"
+              --sample  "$v")
+        "${cmd[@]}"
 
         VARIANTS+=("$v")
         KIN[$v]="$kin"

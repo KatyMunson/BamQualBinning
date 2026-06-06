@@ -81,7 +81,7 @@ first run. If `python`, `pysam`, and `samtools` are already on your `PATH`, you
 can drop `--use-conda` and just run `snakemake -s Snakefile --configfile
 config.yaml --cores 8`.
 
-#### SGE cluster (liger / e002 / e004)
+#### SGE cluster (DRMAA)
 
 ```bash
 snakemake -s Snakefile --configfile config.yaml \

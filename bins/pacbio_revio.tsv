@@ -1,0 +1,17 @@
+# PacBio Revio / CCS 7-bin QV scheme
+# Source: https://ccs.how/faq/qv-binning.html
+#
+# Columns: lo <TAB> hi <TAB> bin_mean
+# lo and hi are inclusive Phred score bounds.
+# bin_mean is the output Phred value for all scores in [lo, hi].
+# Phred scores above the highest hi are clamped to that bin's bin_mean.
+#
+# Copy and edit this file to define a custom scheme; pass with --bins-file.
+#
+0	6	3
+7	13	10
+14	19	17
+20	24	22
+25	29	27
+30	39	35
+40	93	40

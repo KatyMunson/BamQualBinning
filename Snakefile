@@ -87,6 +87,7 @@ rule bin_qv:
         "pysam/0.22.0",
     params:
         strip_kinetics=lambda wc: "--strip-kinetics" if STRIP_KINETICS[wc.sample] else "",
+        bins_file=f"--bins-file {config['bins_file']}" if config.get("bins_file") else "",
     shell:
         """
         python {workflow.basedir}/bin_qv.py \
@@ -97,6 +98,7 @@ rule bin_qv:
             --metrics {output.metrics} \
             --sample  {wildcards.sample} \
             {params.strip_kinetics} \
+            {params.bins_file} \
             2>> {log}
         """
 

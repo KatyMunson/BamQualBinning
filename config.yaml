@@ -5,6 +5,11 @@
 # Path to manifest file (tab-delimited: sample<TAB>input_bam_path)
 manifest: "manifest.tsv"
 
+# Optional: path to a custom QV bins TSV (lo<TAB>hi<TAB>bin_mean per row).
+# Set to null to use the default PacBio Revio 7-bin scheme.
+# Example: bins_file: "bins/pacbio_revio.tsv"
+bins_file: null
+
 # ---------------------------------------------------------------------------
 # Cluster resources
 # ---------------------------------------------------------------------------

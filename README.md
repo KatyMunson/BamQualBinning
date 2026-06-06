@@ -28,6 +28,8 @@ BamQualBinning/
 ├── config.yaml
 ├── bin_qv.py                  ← core remapping script
 ├── manifest.tsv               ← you create this (see Quick start)
+├── bins/
+│   └── pacbio_revio.tsv       ← reference copy of the default bin scheme
 ├── envs/
 │   └── ubam_qvbin.yaml        ← conda environment (for --use-conda)
 ├── benchmarking/
@@ -79,7 +81,7 @@ first run. If `python`, `pysam`, and `samtools` are already on your `PATH`, you
 can drop `--use-conda` and just run `snakemake -s Snakefile --configfile
 config.yaml --cores 8`.
 
-#### SGE cluster (liger / e002 / e004)
+#### SGE cluster (DRMAA)
 
 ```bash
 snakemake -s Snakefile --configfile config.yaml \
@@ -118,7 +120,8 @@ python bin_qv.py \
     --log     bin_qv.log \
     --metrics out.metrics.tsv \
     --sample  my_sample \
-    [--strip-kinetics]
+    [--strip-kinetics] \
+    [--bins-file bins/pacbio_revio.tsv]
 ```
 
 All tags and BAM headers are preserved by default. Pass `--strip-kinetics` to
@@ -127,6 +130,43 @@ streams reads without loading the full file into memory.
 
 `--metrics` and `--sample` are optional; omitting them produces no metrics file
 and does not change processing behavior.
+
+`--bins-file` is optional; omitting it uses the default PacBio Revio 7-bin scheme.
+
+---
+
+## Custom bin schemes
+
+Pass `--bins-file PATH` to use an alternate QV binning scheme. The file is a
+tab-delimited TSV with three columns (no header required; `#` lines are comments):
+
+```
+# lo	hi	bin_mean
+0	6	3
+7	13	10
+...
+```
+
+| Column | Description |
+|--------|-------------|
+| `lo` | Lower bound of the input Phred range (inclusive) |
+| `hi` | Upper bound of the input Phred range (inclusive) |
+| `bin_mean` | Output Phred value for all scores in `[lo, hi]` |
+
+**Rules:**
+- Bins must be contiguous (no gaps, no overlaps).
+- `bin_mean` must be within `[lo, hi]`.
+- Phred scores above the highest `hi` are clamped to that bin's `bin_mean`.
+- At least one bin must be defined.
+
+`bins/pacbio_revio.tsv` is included as a reference copy of the default scheme —
+use it as a starting point for custom schemes.
+
+To use a custom scheme in the Snakemake workflow, set `bins_file` in `config.yaml`:
+
+```yaml
+bins_file: "bins/my_custom_scheme.tsv"
+```
 
 ---
 
@@ -170,14 +210,49 @@ The Snakemake workflow aggregates all per-sample files into
 ## Notes
 
 - The script passes through reads with no QUAL field unchanged (and warns in the log).
-- Phred scores > 93 are clamped to Q40.
+- Phred scores > 93 are clamped to the highest defined bin's mean (Q40 for the default scheme; configurable with `--bins-file`).
 - Quality remapping is vectorized via `bytes.translate()` (one C-level call per
   read), so throughput is bound by BAM compression/decompression I/O rather than
   the binning itself — scale `--threads` accordingly.
-- Expected **wall-clock time** for a 90 Gbp / 5M-read UBAM: a few minutes on
-  cluster scratch, longer on slow NFS, depending on I/O throughput.
-- For a ~40% file size reduction matching standard Revio output, combine with
-  CRAM conversion after binning:
-  ```bash
-  samtools view -C -T ref.fa out.qvbin.bam -o out.qvbin.cram
-  ```
+- PacBio states that retaining full (unbinned) quality scores produces files
+  ~40% larger than the default 7-bin scheme. Measuring whether that holds for
+  real Revio data is a primary purpose of this project; use `benchmarking/` to
+  compare schemes head-to-head. (Early n=1 results suggest the unbinned penalty
+  may be substantially larger — see the estimates below.)
+
+---
+
+## Performance & file-size estimates
+
+> **Note:** the figures below are **extrapolated** from a 200k-read benchmark
+> subset (linear scaling to 2.5M reads) and will be replaced with measured
+> numbers from a full production run. Wall-clock time is I/O-bound and scales
+> with your storage subsystem (fast scratch vs. busy NFS), not just read count;
+> CPU-time scales more reliably. See `benchmarking/` to reproduce.
+
+### Run time (bin_qv.py, ~2.5M reads, multi-threaded I/O)
+
+| Operation | Wall-clock | CPU-time |
+|---|---|---|
+| Default binning, keep kinetics | ~37 min | ~93 min |
+| Default binning, strip kinetics | ~13 min | ~45 min |
+
+Strip-kinetics runs are ~3× faster than keep, because the output is ~6× smaller
+and the cost is dominated by bytes written, not the binning math.
+
+### File size — cost of retaining more quality than the default scheme
+
+The PacBio Revio default binning is the standard. Retaining *more* quality
+information (a finer custom scheme, or full unbinned QVs) costs extra disk —
+roughly a **fixed absolute amount per file**, independent of kinetics handling.
+Per 2.5M-read file:
+
+| What you keep | keep kinetics | strip kinetics |
+|---|---|---|
+| Default Revio binning (standard) | 161 GB | 24 GB |
+| Finer custom scheme (e.g. more high-end bins) | +~4 GB (+2%) | +~4 GB (+16%) |
+| Full base quality (no binning) | +~23 GB (+14%) | +~23 GB (+93%) |
+
+The percentage looks small in a kinetics-retained workflow but nearly doubles
+the file once kinetics are stripped — so the "is full quality worth the disk?"
+trade-off is sharpest when kinetics are already removed.
